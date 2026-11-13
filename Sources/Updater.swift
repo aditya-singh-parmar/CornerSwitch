@@ -104,7 +104,13 @@ final class Updater {
         ]
         try p.run()
         clog("installing and relaunching")
-        await MainActor.run { NSApp.terminate(nil) }
+        await MainActor.run {
+            // An open sheet can block a normal quit, which left the installer waiting forever.
+            // Close everything, ask nicely, then make sure this process really exits.
+            NSApp.windows.forEach { $0.close() }
+            NSApp.terminate(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { exit(0) }
+        }
     }
 
     /// The download must satisfy this app's own designated requirement (same bundle ID, same certificate).

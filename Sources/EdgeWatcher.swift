@@ -15,6 +15,14 @@ final class EdgeWatcher {
     /// briefly, so flicking into the edge (to reach the Dock, a scrollbar…) never switches.
     private var arrivedAt: Date?
     private let settle: TimeInterval = 0.08
+    private var suppressedUntil = Date.distantPast
+
+    /// Ignore the edge for a moment (used right after the devices arrive).
+    func suppress(for seconds: TimeInterval) {
+        suppressedUntil = Date().addingTimeInterval(seconds)
+        push = 0
+        arrivedAt = nil
+    }
 
     func start() {
         let mask: NSEvent.EventTypeMask = [.mouseMoved]
@@ -28,7 +36,7 @@ final class EdgeWatcher {
 
     private func handle(_ e: NSEvent) {
         let s = AppState.shared
-        guard s.enabled, NSEvent.pressedMouseButtons == 0 else { push = 0; return }
+        guard s.enabled, NSEvent.pressedMouseButtons == 0, Date() >= suppressedUntil else { push = 0; return }
         let p = NSEvent.mouseLocation
         guard let frame = edgeScreen(p, s.side) else { push = 0; arrivedAt = nil; return }
         let now = Date()

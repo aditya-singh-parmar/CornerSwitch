@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     let hid = HIDPP()
     let hud = SwitchHUD()
     let launchedAt = Date()
+    var lastArrival: Date?
     let watcher = EdgeWatcher()
     let updater = Updater()
     let state = AppState.shared
@@ -159,8 +160,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     func syncDevices() {
         // Keyboard and mouse just arrived from the other Mac: ring the pointer so it's easy to find.
-        if state.devices.isEmpty, !hid.devices.isEmpty, Date().timeIntervalSince(launchedAt) > 5 {
-            hud.showArrival(at: NSEvent.mouseLocation)
+        if state.devices.isEmpty, !hid.devices.isEmpty {
+            lastArrival = Date()
+            // Hand still moving from the other Mac: don't let that bounce the devices straight back.
+            watcher.suppress(for: 1.5)
+            if Date().timeIntervalSince(launchedAt) > 5 { hud.showArrival(at: NSEvent.mouseLocation) }
         }
         state.devices = hid.devices.map { DeviceInfo(name: $0.name, isKeyboard: $0.isKeyboard, channel: $0.currentHost.map { $0 + 1 }) }
         state.hasPermission = hid.hasPermission
@@ -181,24 +185,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             clog("switch via \(via) ignored: no devices ready here"); return
         }
         clog("switch to channel \(state.target) via \(via)")
-        let inset: CGFloat = 80
-        var park: NSPoint
-        if let p, let f {
-            switch state.side {
-            case .left: park = NSPoint(x: f.minX + inset, y: p.y)
-            case .right: park = NSPoint(x: f.maxX - inset, y: p.y)
-            case .top: park = NSPoint(x: p.x, y: f.maxY - inset)
-            case .bottom: park = NSPoint(x: p.x, y: f.minY + inset)
-            }
-        } else {
-            let m = NSScreen.main?.frame ?? .zero
-            park = NSPoint(x: m.midX, y: m.midY)
-        }
-        // Cocoa (bottom-left origin) to Quartz (top-left origin of the primary display).
-        let primaryHeight = NSScreen.screens.first?.frame.maxY ?? 0
+        // The pointer stays where it is: no jump back from the edge.
         if let p, let f { hud.showDeparture(to: state.otherDisplayName, side: state.side, at: p, screen: f) }
-        CGWarpMouseCursorPosition(CGPoint(x: park.x, y: primaryHeight - park.y))
-        CGAssociateMouseAndMouseCursorPosition(1)
+        sendWhenReady(deadline: Date().addingTimeInterval(2.5))
+    }
+
+    /// If the keyboard or mouse is still reconnecting to this Mac (it arrived moments ago),
+    /// wait for it so nothing is left behind, then send every device across together.
+    private func sendWhenReady(deadline: Date) {
+        let expected = Set([state.keyboardName, state.mouseName].compactMap { $0 })
+        let present = Set(hid.devices.map(\.name))
+        let arrivingRecently = lastArrival.map { Date().timeIntervalSince($0) < 8 } ?? false
+        if arrivingRecently, !expected.isSubset(of: present), Date() < deadline {
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(120)) { [weak self] in
+                self?.sendWhenReady(deadline: deadline)
+            }
+            return
+        }
         let fixed = state.targetChannel
         let fallback = state.target - 1
         for d in hid.devices {
