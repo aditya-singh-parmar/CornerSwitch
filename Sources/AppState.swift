@@ -1,4 +1,5 @@
 import Foundation
+import SystemConfiguration
 
 enum Side: String, CaseIterable {
     case left, right, top, bottom
@@ -49,6 +50,14 @@ final class AppState: ObservableObject {
             if let m = devices.first(where: { !$0.isKeyboard })?.name { mouseName = m }
         }
     }
+    /// What the user calls the other Mac ("Office Mac"). Shown in the window, hint and menu.
+    @Published var otherName: String { didSet { d.set(otherName, forKey: "otherName") } }
+    var otherDisplayName: String {
+        let t = otherName.trimmingCharacters(in: .whitespaces)
+        return t.isEmpty ? "Other Mac" : t
+    }
+    /// This Mac's computer name from Sharing settings.
+    let thisName: String = (SCDynamicStoreCopyComputerName(nil, nil) as String?) ?? "This Mac"
     @Published var keyboardName: String? { didSet { d.set(keyboardName, forKey: "keyboardName") } }
     @Published var mouseName: String? { didSet { d.set(mouseName, forKey: "mouseName") } }
     @Published var hasPermission = true
@@ -61,6 +70,7 @@ final class AppState: ObservableObject {
         targetChannel = d.integer(forKey: "targetChannel")
         resistance = Resistance(rawValue: d.integer(forKey: "resistance")) ?? .medium
         autoUpdate = d.object(forKey: "autoUpdate") as? Bool ?? true
+        otherName = d.string(forKey: "otherName") ?? ""
         keyboardName = d.string(forKey: "keyboardName")
         mouseName = d.string(forKey: "mouseName")
     }

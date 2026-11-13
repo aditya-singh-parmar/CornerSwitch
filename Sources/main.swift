@@ -7,6 +7,8 @@ import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     let hid = HIDPP()
+    let hud = SwitchHUD()
+    let launchedAt = Date()
     let watcher = EdgeWatcher()
     let updater = Updater()
     let state = AppState.shared
@@ -44,6 +46,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         UserDefaults.standard.set(true, forKey: "hasLaunched")
         if firstRun || !quietLaunch || !hid.hasPermission { showWindow() }
         if !hid.hasPermission { watchForPermission() }
+        // Hidden: `-previewHUD YES` shows the switch hint without switching (for design checks).
+        if UserDefaults.standard.bool(forKey: "previewHUD"), let f = NSScreen.main?.frame {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                self.hud.showDeparture(to: self.state.otherDisplayName, side: self.state.side,
+                                       at: NSPoint(x: f.minX, y: f.midY), screen: f, hold: 8)
+            }
+        }
     }
 
     /// Polls until Input Monitoring is granted, then connects to the devices without a restart.
@@ -92,6 +101,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             w.layoutIfNeeded()
             if !w.isVisible { placeOnScreen(w) }
             w.makeKeyAndOrderFront(nil)
+            // Don't hand keyboard focus to the name field on open; typing should only land there after a click.
+            DispatchQueue.main.async { w.makeFirstResponder(nil) }
         }
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -131,7 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         on.state = state.enabled ? .on : .off
         on.target = self
         menu.addItem(on)
-        let sw = NSMenuItem(title: "Switch to Other Mac", action: hid.devices.isEmpty ? nil : #selector(menuSwitch), keyEquivalent: "")
+        let sw = NSMenuItem(title: "Switch to \(state.otherDisplayName)", action: hid.devices.isEmpty ? nil : #selector(menuSwitch), keyEquivalent: "")
         sw.target = self
         menu.addItem(sw)
         menu.addItem(.separator())
@@ -147,6 +158,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     // MARK: Behaviour
 
     func syncDevices() {
+        // Keyboard and mouse just arrived from the other Mac: ring the pointer so it's easy to find.
+        if state.devices.isEmpty, !hid.devices.isEmpty, Date().timeIntervalSince(launchedAt) > 5 {
+            hud.showArrival(at: NSEvent.mouseLocation)
+        }
         state.devices = hid.devices.map { DeviceInfo(name: $0.name, isKeyboard: $0.isKeyboard, channel: $0.currentHost.map { $0 + 1 }) }
         state.hasPermission = hid.hasPermission
         statusItem.button?.appearsDisabled = !state.enabled || hid.devices.isEmpty
@@ -181,6 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         // Cocoa (bottom-left origin) to Quartz (top-left origin of the primary display).
         let primaryHeight = NSScreen.screens.first?.frame.maxY ?? 0
+        if let p, let f { hud.showDeparture(to: state.otherDisplayName, side: state.side, at: p, screen: f) }
         CGWarpMouseCursorPosition(CGPoint(x: park.x, y: primaryHeight - park.y))
         CGAssociateMouseAndMouseCursorPosition(1)
         let fixed = state.targetChannel

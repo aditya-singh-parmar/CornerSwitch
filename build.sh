@@ -14,7 +14,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 for arch in arm64 x86_64; do
   swiftc -O -swift-version 5 -target "$arch-apple-macos13.0" \
-    -framework AppKit -framework SwiftUI -framework IOKit -framework ServiceManagement -framework Security \
+    -framework AppKit -framework SwiftUI -framework IOKit -framework ServiceManagement -framework Security -framework SystemConfiguration \
     Sources/*.swift -o "build/CornerSwitch-$arch" 2> >(grep -v libswiftCompatibilityPacks >&2)
 done
 lipo -create build/CornerSwitch-arm64 build/CornerSwitch-x86_64 -output "$APP/Contents/MacOS/CornerSwitch"

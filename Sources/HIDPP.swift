@@ -83,6 +83,10 @@ final class HIDPP {
         let pairs = IOHIDDeviceGetProperty(dev, kIOHIDDeviceUsagePairsKey as CFString) as? [[String: Int]] ?? []
         let isKeyboard = pairs.contains { $0[kIOHIDDeviceUsagePageKey] == 1 && $0[kIOHIDDeviceUsageKey] == 6 }
         let d = LogiDevice(ref: dev, name: name, isKeyboard: isKeyboard)
+        // Remembered from earlier probes, so a switch right after reconnecting goes out instantly.
+        let ud = UserDefaults.standard
+        if let idx = ud.object(forKey: "chIdx.\(name)") as? Int { d.changeHostIndex = UInt8(idx) }
+        if let host = ud.object(forKey: "host.\(name)") as? Int { d.currentHost = host }
         // Open per device, so one refused device doesn't block the other.
         let r = IOHIDDeviceOpen(dev, IOOptionBits(kIOHIDOptionsTypeNone))
         if r != kIOReturnSuccess { log(String(format: "open %@: 0x%08x", name, r)) }
@@ -157,10 +161,12 @@ final class HIDPP {
                 return
             }
             d.changeHostIndex = idx
+            UserDefaults.standard.set(Int(idx), forKey: "chIdx.\(d.name)")
             self.send(d, feature: idx, fn: 0) { info in
                 if let info, info.count >= 2 {
                     d.hostCount = Int(info[0])
                     d.currentHost = Int(info[1])
+                    UserDefaults.standard.set(Int(info[1]), forKey: "host.\(d.name)")
                 }
                 self.onChange?()
                 then?()

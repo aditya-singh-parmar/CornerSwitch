@@ -16,6 +16,7 @@ struct Actions {
 final class UIModel: ObservableObject {
     static let shared = UIModel()
     @Published var showAdvanced = UserDefaults.standard.bool(forKey: "showAdvanced")
+    @Published var renaming = false
 }
 
 /// "MX KEYS S" -> "MX Keys S"
@@ -36,7 +37,7 @@ func statusLine(_ state: AppState) -> String {
     case .top: edge = "top edge"
     case .bottom: edge = "bottom edge"
     }
-    return "Push the pointer past the \(edge) to switch"
+    return "Push past the \(edge) to switch to \(state.otherDisplayName)"
 }
 
 struct MainView: View {
@@ -65,7 +66,8 @@ struct MainView: View {
             }
 
             Section {
-                Hero(side: state.side, active: state.enabled && !state.devices.isEmpty)
+                Hero(side: state.side, active: state.enabled && !state.devices.isEmpty,
+                     thisName: state.thisName, otherName: state.otherDisplayName)
                     .listRowInsets(EdgeInsets())
             }
 
@@ -81,6 +83,12 @@ struct MainView: View {
                     Text("Below").tag(Side.bottom)
                 }
                 .pickerStyle(.segmented)
+                LabeledContent("Other Mac's name") {
+                    HStack(spacing: 10) {
+                        Text(state.otherDisplayName).foregroundStyle(.secondary)
+                        Button("Rename…") { ui.renaming = true }
+                    }
+                }
             }
 
             Section("Devices") {
@@ -103,7 +111,10 @@ struct MainView: View {
         .formStyle(.grouped)
         .scrollIndicators(.never)
         .tint(brand)
-        .frame(width: 460, height: state.hasPermission ? 562 : 656)
+        .frame(width: 460, height: state.hasPermission ? 600 : 694)
+        .sheet(isPresented: $ui.renaming) {
+            RenameView(state: state) { ui.renaming = false }
+        }
         .sheet(isPresented: $ui.showAdvanced) {
             AdvancedView(state: state, actions: actions) { ui.showAdvanced = false }
         }
@@ -114,12 +125,14 @@ struct MainView: View {
 struct Hero: View {
     let side: Side
     let active: Bool
+    let thisName: String
+    let otherName: String
 
     var body: some View {
         let vertical = side == .top || side == .bottom
         let size: CGFloat = vertical ? 30 : 48
-        let me = Glyph(symbol: "laptopcomputer", title: "This Mac", size: size, highlighted: true)
-        let other = Glyph(symbol: "desktopcomputer", title: "Other Mac", size: size, highlighted: false)
+        let me = Glyph(symbol: "laptopcomputer", title: thisName, size: size, highlighted: true)
+        let other = Glyph(symbol: "desktopcomputer", title: otherName, size: size, highlighted: false)
         let arrow = Image(systemName: {
             switch side {
             case .left: "arrow.left"
@@ -156,7 +169,7 @@ struct Glyph: View {
             Image(systemName: symbol)
                 .font(.system(size: size, weight: .thin))
                 .foregroundStyle(highlighted ? brand : Color.secondary)
-            Text(title).font(.caption).fontWeight(.medium)
+            Text(title).font(.caption).fontWeight(.medium).lineLimit(1).frame(maxWidth: 140)
                 .foregroundStyle(highlighted ? Color.primary : Color.secondary)
         }
     }
@@ -224,7 +237,7 @@ struct AdvancedView: View {
                         Button("Switch Now", action: actions.switchNow).disabled(state.devices.isEmpty)
                     } label: {
                         Text("Test switch")
-                        Text("Sends the keyboard and mouse to the other Mac")
+                        Text("Sends the keyboard and mouse to \(state.otherDisplayName)")
                     }
                 }
             }
@@ -246,5 +259,28 @@ struct AdvancedView: View {
         case .installing: "Installing…"
         default: nil
         }
+    }
+}
+
+struct RenameView: View {
+    @ObservedObject var state: AppState
+    let done: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Name the other Mac").font(.headline)
+            Text("Shown in this window and in the hint when you switch.")
+                .font(.callout).foregroundStyle(.secondary)
+            TextField("", text: $state.otherName, prompt: Text("Office Mac"))
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(done)
+            HStack {
+                Spacer()
+                Button("Done", action: done).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 340)
+        .tint(brand)
     }
 }

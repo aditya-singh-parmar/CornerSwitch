@@ -65,6 +65,10 @@ final class EdgeWatcher {
             case .top: atEdge = p.y >= f.maxY - 2; beyond = NSPoint(x: p.x, y: f.maxY + 3)
             case .bottom: atEdge = p.y <= f.minY + 1; beyond = NSPoint(x: p.x, y: f.minY - 3)
             }
+            // Skip the outer 10% at each end of the edge: corners, the menu bar and Dock ends stay safe.
+            let along: CGFloat = (side == .left || side == .right)
+                ? (p.y - f.minY) / f.height : (p.x - f.minX) / f.width
+            guard along >= 0.1, along <= 0.9 else { continue }
             // Only outer edges: if another display continues past this edge, the cursor just flows there.
             if atEdge, !frames.contains(where: { $0.contains(beyond) }) { return f }
         }
