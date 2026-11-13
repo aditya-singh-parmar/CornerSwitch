@@ -40,25 +40,26 @@ final class Updater {
                 }
                 self.latestAsset = url
                 state.update = .available(version)
-                if state.autoUpdate && !userInitiated { self.install() }
+                if state.autoUpdate && !userInitiated { self.install(silent: true) }
             }
         }.resume()
     }
 
-    func install() {
+    /// `silent`: relaunch without opening the window (background auto-update).
+    func install(silent: Bool = false) {
         guard let url = latestAsset else { return }
         let state = AppState.shared
         state.update = .installing
         Task {
             do {
-                try await Self.download(url)
+                try await Self.download(url, silent: silent)
             } catch {
                 await MainActor.run { state.update = .failed(error.localizedDescription) }
             }
         }
     }
 
-    private static func download(_ url: URL) async throws {
+    private static func download(_ url: URL, silent: Bool) async throws {
         let fm = FileManager.default
         let tmp = fm.temporaryDirectory.appendingPathComponent("CornerSwitchUpdate-\(UUID().uuidString)")
         try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -79,7 +80,7 @@ final class Updater {
         if mv "$DEST" "$DEST.old"; then
           if /usr/bin/ditto "$NEW" "$DEST"; then rm -rf "$DEST.old"; else rm -rf "$DEST"; mv "$DEST.old" "$DEST"; fi
         fi
-        /usr/bin/open "$DEST"
+        if [ "$SILENT" = 1 ]; then /usr/bin/open "$DEST" --args -silentLaunch YES; else /usr/bin/open "$DEST"; fi
         rm -rf "$TMP"
         """
         let p = Process()
@@ -87,7 +88,7 @@ final class Updater {
         p.arguments = ["-c", script]
         p.environment = [
             "PID": String(ProcessInfo.processInfo.processIdentifier),
-            "DEST": dest.path, "NEW": newApp.path, "TMP": tmp.path,
+            "DEST": dest.path, "NEW": newApp.path, "TMP": tmp.path, "SILENT": silent ? "1" : "0",
         ]
         try p.run()
         await MainActor.run { NSApp.terminate(nil) }

@@ -67,6 +67,17 @@ final class HIDPP {
 
     var hasPermission: Bool { IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted }
 
+    /// Called once Input Monitoring is granted, so the user doesn't have to restart the app.
+    func reopen() {
+        openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+        for d in devices {
+            let r = IOHIDDeviceOpen(d.ref, IOOptionBits(kIOHIDOptionsTypeNone))
+            log(String(format: "reopen %@: 0x%08x", d.name, r))
+            probe(d)
+        }
+        onChange?()
+    }
+
     private func added(_ dev: IOHIDDevice) {
         let name = IOHIDDeviceGetProperty(dev, kIOHIDProductKey as CFString) as? String ?? "Logitech device"
         let pairs = IOHIDDeviceGetProperty(dev, kIOHIDDeviceUsagePairsKey as CFString) as? [[String: Int]] ?? []

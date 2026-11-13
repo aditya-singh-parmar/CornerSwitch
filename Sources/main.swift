@@ -1,40 +1,36 @@
-// CornerSwitch: push the cursor against the edge where your other Mac sits and the
+// CornerSwitch: push the cursor past the edge where your other Mac sits and the
 // Logitech keyboard and mouse jump to it. Switching uses Bluetooth HID++ only, no network.
 
 import AppKit
 import SwiftUI
 import ServiceManagement
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     let hid = HIDPP()
     let watcher = EdgeWatcher()
     let updater = Updater()
     let state = AppState.shared
     var statusItem: NSStatusItem!
-    let popover = NSPopover()
+    var window: NSWindow?
+    var quietLaunch = false
+
+    func applicationWillFinishLaunching(_ note: Notification) {
+        quietLaunch = launchedQuietly()
+    }
 
     func applicationDidFinishLaunching(_ note: Notification) {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        let symbol = NSImage(systemSymbolName: "rectangle.2.swap", accessibilityDescription: "CornerSwitch")
+        // Menu bar icon. On notched MacBooks macOS hides icons that don't fit, so the
+        // window is also reachable from Spotlight, Launchpad and the Dock.
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem.autosaveName = "CornerSwitch"
+        statusItem.button?.image = NSImage(systemSymbolName: "rectangle.2.swap", accessibilityDescription: "CornerSwitch")
             ?? NSImage(systemSymbolName: "display.2", accessibilityDescription: "CornerSwitch")
-        statusItem.button?.image = symbol
-        statusItem.button?.action = #selector(togglePopover)
-        statusItem.button?.target = self
+        let menu = NSMenu()
+        menu.delegate = self
+        statusItem.menu = menu
 
-        popover.behavior = .transient
-        popover.animates = true
-        popover.contentViewController = NSHostingController(rootView: PopoverView(state: state, actions: Actions(
-            switchNow: { [weak self] in self?.switchNow(from: nil, screen: nil) },
-            openPrivacy: {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!)
-            },
-            refresh: { [weak self] in self?.refresh() },
-            setLaunchAtLogin: { [weak self] in self?.setLaunchAtLogin($0) },
-            checkUpdates: { [weak self] in self?.updater.check(userInitiated: true) },
-            installUpdate: { [weak self] in self?.updater.install() },
-            quit: { NSApp.terminate(nil) })))
-
-        hid.log = { NSLog("CornerSwitch: %@", $0) }
+        hid.log = { clog($0) }
+        clog("launch v\(state.version), input monitoring: \(hid.hasPermission)")
         hid.onChange = { [weak self] in self?.syncDevices() }
         hid.start()
 
@@ -42,18 +38,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         watcher.start()
         updater.start()
         syncDevices()
+        state.launchAtLogin = SMAppService.mainApp.status == .enabled
+
+        let firstRun = !UserDefaults.standard.bool(forKey: "hasLaunched")
+        UserDefaults.standard.set(true, forKey: "hasLaunched")
+        if firstRun || !quietLaunch || !hid.hasPermission { showWindow() }
+        if !hid.hasPermission { watchForPermission() }
     }
 
-    @objc func togglePopover() {
-        if popover.isShown { popover.performClose(nil); return }
+    /// Polls until Input Monitoring is granted, then connects to the devices without a restart.
+    private func watchForPermission() {
+        Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] t in
+            guard let self, self.hid.hasPermission else { return }
+            t.invalidate()
+            clog("input monitoring granted")
+            self.hid.reopen()
+            self.syncDevices()
+        }
+    }
+
+    /// Opening the app again (Finder, Spotlight, Dock) brings up the window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        showWindow()
+        return true
+    }
+
+    // MARK: Window
+
+    @objc func showWindow() {
         state.hasPermission = hid.hasPermission
         state.launchAtLogin = SMAppService.mainApp.status == .enabled
-        refresh()
-        popover.show(relativeTo: statusItem.button!.bounds, of: statusItem.button!, preferredEdge: .minY)
-        popover.contentViewController?.view.window?.makeKey()
+        hid.devices.forEach { hid.probe($0) }
+        if window == nil {
+            let host = NSHostingController(rootView: MainView(state: state, actions: Actions(
+                switchNow: { [weak self] in self?.switchNow(from: nil, screen: nil) },
+                openPrivacy: {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!)
+                },
+                setLaunchAtLogin: { [weak self] in self?.setLaunchAtLogin($0) },
+                checkUpdates: { [weak self] in self?.updater.check(userInitiated: true) },
+                installUpdate: { [weak self] in self?.updater.install() })))
+            host.sizingOptions = [.preferredContentSize]
+            let w = NSWindow(contentViewController: host)
+            w.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+            w.titlebarAppearsTransparent = true
+            w.titleVisibility = .hidden
+            w.isMovableByWindowBackground = true
+            w.isReleasedWhenClosed = false
+            w.delegate = self
+            w.center()
+            window = w
+        }
+        // Show in the Dock and Cmd-Tab while the window is open, like a normal app.
+        NSApp.setActivationPolicy(.regular)
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
-    func refresh() { hid.devices.forEach { hid.probe($0) } }
+    func windowWillClose(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+    }
+
+    // MARK: Menu bar
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let status = NSMenuItem(title: statusLine(state), action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        menu.addItem(status)
+        menu.addItem(.separator())
+        let on = NSMenuItem(title: "CornerSwitch On", action: #selector(toggleEnabled), keyEquivalent: "")
+        on.state = state.enabled ? .on : .off
+        on.target = self
+        menu.addItem(on)
+        let sw = NSMenuItem(title: "Switch to Other Mac", action: hid.devices.isEmpty ? nil : #selector(menuSwitch), keyEquivalent: "")
+        sw.target = self
+        menu.addItem(sw)
+        menu.addItem(.separator())
+        let open = NSMenuItem(title: "Open CornerSwitch…", action: #selector(showWindow), keyEquivalent: ",")
+        open.target = self
+        menu.addItem(open)
+        menu.addItem(NSMenuItem(title: "Quit CornerSwitch", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    }
+
+    @objc func toggleEnabled() { state.enabled.toggle(); syncDevices() }
+    @objc func menuSwitch() { switchNow(from: nil, screen: nil) }
+
+    // MARK: Behaviour
 
     func syncDevices() {
         state.devices = hid.devices.map { DeviceInfo(name: $0.name, isKeyboard: $0.isKeyboard, channel: $0.currentHost.map { $0 + 1 }) }
@@ -62,9 +133,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Parks the cursor just inside the edge it left from (so coming back feels natural
-    /// and doesn't bounce straight back), then sends both devices to the target channel.
+    /// and doesn't bounce straight back), then sends both devices to the other Mac.
     func switchNow(from p: NSPoint?, screen f: NSRect?) {
-        guard !hid.devices.isEmpty else { NSSound.beep(); return }
+        let via = p == nil ? "button" : "\(state.side.rawValue) edge"
+        if UserDefaults.standard.bool(forKey: "dryRun") {
+            clog("DRYRUN switch to channel \(state.target) via \(via), devices here: \(hid.devices.count)")
+            return
+        }
+        guard !hid.devices.isEmpty else { clog("switch via \(via) ignored: no devices here"); NSSound.beep(); return }
+        clog("switch to channel \(state.target) via \(via)")
         let inset: CGFloat = 80
         var park: NSPoint
         if let p, let f {
@@ -93,6 +170,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSSound.beep()
         }
         state.launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    /// True when started at login or relaunched by the updater, so no window pops up.
+    private func launchedQuietly() -> Bool {
+        if UserDefaults.standard.bool(forKey: "silentLaunch") { return true }
+        if let ev = NSAppleEventManager.shared().currentAppleEvent,
+           ev.eventID == AEEventID(kAEOpenApplication),
+           ev.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue == OSType(keyAELaunchedAsLogInItem) {
+            return true
+        }
+        // Fallback: the console session started within the last two minutes.
+        var loginTime: Int = 0
+        setutxent()
+        while let e = getutxent() {
+            let line = withUnsafeBytes(of: e.pointee.ut_line) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+            if e.pointee.ut_type == USER_PROCESS, line == "console" {
+                loginTime = max(loginTime, Int(e.pointee.ut_tv.tv_sec))
+            }
+        }
+        endutxent()
+        return loginTime > 0 && Int(Date().timeIntervalSince1970) - loginTime < 120
     }
 }
 

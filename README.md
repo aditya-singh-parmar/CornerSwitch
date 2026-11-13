@@ -12,16 +12,18 @@ Tested with the MX Keys S and the MX Master 3S over Bluetooth.
 
 1. Download `CornerSwitch.dmg` from [Releases](../../releases/latest), open it and drag CornerSwitch to Applications. If you aren't an admin, use `~/Applications` instead, so the app can update itself.
 2. Open it. The app is signed with a self-signed certificate, so macOS asks once: go to System Settings > Privacy & Security and click **Open Anyway**.
-3. Allow **Input Monitoring** when asked, then reopen the app from its menu bar icon.
-4. In the menu bar popover, drag "Other Mac" to the side where that Mac sits, and turn on **Launch at login**.
+3. Allow **Input Monitoring** when asked. The window picks it up on its own.
+4. Drag "Other Mac" to the side where that Mac sits, and turn on **Start at login**.
 
 Do the same on the other Mac, with the arrangement mirrored.
 
 ## How it behaves
 
-- **Push to switch**: how hard you push against the edge before it switches (Light, Medium or Firm). It doesn't switch while a mouse button is held, and only outer screen edges count.
-- Before switching, the cursor is parked just inside that edge, so coming back feels continuous.
-- **Send devices to**: Auto picks the other of channels 1 and 2, based on the channel the devices report for this Mac.
+- Push the pointer past the edge where the other Mac sits. It doesn't switch while a mouse button is held, and only outer screen edges count.
+- Before switching, the pointer is parked just inside that edge, so coming back feels continuous.
+- Open the window from Spotlight, Launchpad or the Dock. The menu bar icon is a shortcut. On notched MacBooks, macOS hides menu bar icons that don't fit; Cmd-drag the icon to the right to keep it visible.
+- **Advanced**: push strength, which Easy-Switch key the other Mac is on (Automatic works for two Macs), updates, and a manual switch.
+- Log: `~/Library/Logs/CornerSwitch.log`
 
 ## Updates
 

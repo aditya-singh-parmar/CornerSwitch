@@ -42,7 +42,15 @@ final class AppState: ObservableObject {
     @Published var resistance: Resistance { didSet { d.set(resistance.rawValue, forKey: "resistance") } }
     @Published var autoUpdate: Bool { didSet { d.set(autoUpdate, forKey: "autoUpdate") } }
 
-    @Published var devices: [DeviceInfo] = []
+    @Published var devices: [DeviceInfo] = [] {
+        didSet {
+            // Remember names so the window can still say "MX Keys S: On other Mac" when they're away.
+            if let k = devices.first(where: \.isKeyboard)?.name { keyboardName = k }
+            if let m = devices.first(where: { !$0.isKeyboard })?.name { mouseName = m }
+        }
+    }
+    @Published var keyboardName: String? { didSet { d.set(keyboardName, forKey: "keyboardName") } }
+    @Published var mouseName: String? { didSet { d.set(mouseName, forKey: "mouseName") } }
     @Published var hasPermission = true
     @Published var launchAtLogin = false
     @Published var update: UpdateStatus = .idle
@@ -53,6 +61,8 @@ final class AppState: ObservableObject {
         targetChannel = d.integer(forKey: "targetChannel")
         resistance = Resistance(rawValue: d.integer(forKey: "resistance")) ?? .medium
         autoUpdate = d.object(forKey: "autoUpdate") as? Bool ?? true
+        keyboardName = d.string(forKey: "keyboardName")
+        mouseName = d.string(forKey: "mouseName")
     }
 
     var thisChannel: Int? { devices.compactMap(\.channel).first }
