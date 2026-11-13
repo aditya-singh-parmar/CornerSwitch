@@ -183,7 +183,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let primaryHeight = NSScreen.screens.first?.frame.maxY ?? 0
         CGWarpMouseCursorPosition(CGPoint(x: park.x, y: primaryHeight - park.y))
         CGAssociateMouseAndMouseCursorPosition(1)
-        hid.switchAll(to: state.target - 1)
+        let fixed = state.targetChannel
+        let fallback = state.target - 1
+        for d in hid.devices {
+            clog("  \(d.name): on channel \(d.currentHost.map { String($0 + 1) } ?? "?"), changeHost \(d.changeHostIndex.map { String($0) } ?? "unknown")")
+        }
+        // Automatic works per device: each goes to "the other one" of its own channels 1 and 2.
+        hid.switchAll { d in
+            if fixed > 0 { return fixed - 1 }
+            guard let cur = d.currentHost else { return fallback }
+            return cur == 1 ? 0 : 1
+        }
     }
 
     func setLaunchAtLogin(_ on: Bool) {

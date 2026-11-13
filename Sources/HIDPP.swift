@@ -168,22 +168,34 @@ final class HIDPP {
         }
     }
 
-    /// Moves every connected device to `host` (0-based). Keyboard first, then mouse.
-    func switchAll(to host: Int) {
-        let ordered = devices.sorted { $0.isKeyboard && !$1.isKeyboard }
-        for (n, d) in ordered.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(40 * n)) { [weak self] in
+    /// Moves every connected device at once. `host(d)` gives each device's target channel
+    /// (0-based), since a keyboard and a mouse can be paired to the Macs on different keys.
+    /// A failed write is retried once after reopening the device.
+    func switchAll(_ host: @escaping (LogiDevice) -> Int) {
+        for d in devices {
+            let target = host(d)
+            let go = { [weak self] (idx: UInt8) in
                 guard let self else { return }
-                let go = { (idx: UInt8) in
-                    self.send(d, feature: idx, fn: 1, params: [UInt8(host)], expectReply: false) { _ in }
-                    self.log("\(d.name) -> channel \(host + 1)")
+                self.send(d, feature: idx, fn: 1, params: [UInt8(target)], expectReply: false) { ok in
+                    if ok != nil { self.log("\(d.name): sent to channel \(target + 1)"); return }
+                    self.log("\(d.name): send failed, retrying")
+                    _ = IOHIDDeviceOpen(d.ref, IOOptionBits(kIOHIDOptionsTypeNone))
+                    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80)) {
+                        self.send(d, feature: idx, fn: 1, params: [UInt8(target)], expectReply: false) { ok2 in
+                            self.log("\(d.name): retry \(ok2 != nil ? "sent" : "failed")")
+                        }
+                    }
                 }
-                if let idx = d.changeHostIndex { go(idx) } else {
-                    self.probe(d) { if let idx = d.changeHostIndex { go(idx) } }
-                }
+            }
+            if let idx = d.changeHostIndex { go(idx) } else {
+                log("\(d.name): not probed yet, probing before switch")
+                probe(d) { if let idx = d.changeHostIndex { go(idx) } else { self.log("\(d.name): can't switch, no CHANGE_HOST") } }
             }
         }
     }
+
+    /// Back-compat for the CLI: every device to the same channel.
+    func switchAll(to host: Int) { switchAll { _ in host } }
 
     /// This Mac's channel (0-based) as reported by the devices.
     var thisHost: Int? { devices.compactMap(\.currentHost).first }

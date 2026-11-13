@@ -14,7 +14,7 @@ final class EdgeWatcher {
     /// When the cursor arrived at the edge. Pushes only count after it has rested there
     /// briefly, so flicking into the edge (to reach the Dock, a scrollbar…) never switches.
     private var arrivedAt: Date?
-    private let settle: TimeInterval = 0.15
+    private let settle: TimeInterval = 0.08
 
     func start() {
         let mask: NSEvent.EventTypeMask = [.mouseMoved]
