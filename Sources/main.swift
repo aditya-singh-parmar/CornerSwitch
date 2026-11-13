@@ -80,19 +80,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 installUpdate: { [weak self] in self?.updater.install() })))
             host.sizingOptions = [.preferredContentSize]
             let w = NSWindow(contentViewController: host)
-            w.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
-            w.titlebarAppearsTransparent = true
-            w.titleVisibility = .hidden
-            w.isMovableByWindowBackground = true
+            w.styleMask = [.titled, .closable, .miniaturizable]
+            w.title = "CornerSwitch"
             w.isReleasedWhenClosed = false
             w.delegate = self
-            w.center()
             window = w
         }
         // Show in the Dock and Cmd-Tab while the window is open, like a normal app.
         NSApp.setActivationPolicy(.regular)
-        window?.makeKeyAndOrderFront(nil)
+        if let w = window {
+            w.layoutIfNeeded()
+            if !w.isVisible { placeOnScreen(w) }
+            w.makeKeyAndOrderFront(nil)
+        }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Centres the window inside the usable screen area (below the menu bar, above the Dock).
+    private func placeOnScreen(_ w: NSWindow) {
+        guard let vf = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame else { return }
+        var f = w.frame
+        f.size.height = min(f.height, vf.height)
+        f.origin.x = vf.midX - f.width / 2
+        f.origin.y = vf.midY - f.height / 2
+        w.setFrame(f, display: false)
+    }
+
+    /// Keeps the window inside the usable area when its content grows (e.g. the permission banner).
+    func windowDidResize(_ notification: Notification) {
+        guard let w = notification.object as? NSWindow, let vf = w.screen?.visibleFrame else { return }
+        var f = w.frame
+        if f.minY < vf.minY { f.origin.y = vf.minY }
+        if f.maxY > vf.maxY { f.origin.y = max(vf.minY, vf.maxY - f.height) }
+        if f != w.frame { w.setFrame(f, display: true) }
     }
 
     func windowWillClose(_ notification: Notification) {
