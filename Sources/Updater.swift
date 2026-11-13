@@ -88,7 +88,9 @@ final class Updater {
         }
         // Wait for this process to quit, swap the bundle (restoring the old one if the copy fails), relaunch.
         let script = """
-        while kill -0 "$PID" 2>/dev/null; do sleep 0.2; done
+        # Wait up to 5 s for the app to quit, then force it, so an update can never hang.
+        for i in $(seq 1 25); do kill -0 "$PID" 2>/dev/null || break; sleep 0.2; done
+        kill -9 "$PID" 2>/dev/null; sleep 0.3
         if mv "$DEST" "$DEST.old"; then
           if /usr/bin/ditto "$NEW" "$DEST"; then rm -rf "$DEST.old"; else rm -rf "$DEST"; mv "$DEST.old" "$DEST"; fi
         fi
