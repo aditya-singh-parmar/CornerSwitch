@@ -11,6 +11,10 @@ final class EdgeWatcher {
     private var push: CGFloat = 0
     private var lastPush = Date.distantPast
     private var cooldownUntil = Date.distantPast
+    /// When the cursor arrived at the edge. Pushes only count after it has rested there
+    /// briefly, so flicking into the edge (to reach the Dock, a scrollbar…) never switches.
+    private var arrivedAt: Date?
+    private let settle: TimeInterval = 0.15
 
     func start() {
         let mask: NSEvent.EventTypeMask = [.mouseMoved]
@@ -26,7 +30,10 @@ final class EdgeWatcher {
         let s = AppState.shared
         guard s.enabled, NSEvent.pressedMouseButtons == 0 else { push = 0; return }
         let p = NSEvent.mouseLocation
-        guard let frame = edgeScreen(p, s.side) else { push = 0; return }
+        guard let frame = edgeScreen(p, s.side) else { push = 0; arrivedAt = nil; return }
+        let now = Date()
+        if arrivedAt == nil { arrivedAt = now }
+        guard now.timeIntervalSince(arrivedAt!) >= settle else { return }
         let outward: CGFloat
         switch s.side {
         case .left: outward = -e.deltaX
@@ -35,7 +42,6 @@ final class EdgeWatcher {
         case .bottom: outward = e.deltaY
         }
         guard outward > 0 else { return }
-        let now = Date()
         if now.timeIntervalSince(lastPush) > 0.35 { push = 0 }
         lastPush = now
         push += outward

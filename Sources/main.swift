@@ -160,7 +160,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             clog("DRYRUN switch to channel \(state.target) via \(via), devices here: \(hid.devices.count)")
             return
         }
-        guard !hid.devices.isEmpty else { clog("switch via \(via) ignored: no devices here"); NSSound.beep(); return }
+        // Only touch the pointer when a switch can actually go out.
+        guard hid.hasPermission else { clog("switch via \(via) ignored: no Input Monitoring"); return }
+        guard hid.devices.contains(where: { $0.changeHostIndex != nil }) else {
+            clog("switch via \(via) ignored: no devices ready here"); return
+        }
         clog("switch to channel \(state.target) via \(via)")
         let inset: CGFloat = 80
         var park: NSPoint
