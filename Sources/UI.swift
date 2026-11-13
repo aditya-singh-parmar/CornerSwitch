@@ -211,6 +211,11 @@ struct AdvancedView: View {
                         ForEach(Resistance.allCases, id: \.self) { Text($0.title).tag($0) }
                     }
                     .pickerStyle(.segmented)
+                    .disabled(state.requireControl)
+                    Toggle(isOn: $state.requireControl) {
+                        Text("Only while holding Control")
+                        Text("Hold ⌃ and touch the edge to switch. No accidental switches.")
+                    }
                     Picker(selection: $state.targetChannel) {
                         Text("Automatic").tag(0)
                         ForEach(1...3, id: \.self) { Text("Key \($0)").tag($0) }
@@ -249,7 +254,7 @@ struct AdvancedView: View {
             .padding([.horizontal, .bottom], 20)
         }
         .tint(brand)
-        .frame(width: 440, height: 360)
+        .frame(width: 440, height: 410)
     }
 
     private var updateSubtitle: String? {

@@ -163,7 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if state.devices.isEmpty, !hid.devices.isEmpty {
             lastArrival = Date()
             // Hand still moving from the other Mac: don't let that bounce the devices straight back.
-            watcher.suppress(for: 1.5)
+            watcher.suppress(for: 0.8)
             if Date().timeIntervalSince(launchedAt) > 5 { hud.showArrival(at: NSEvent.mouseLocation) }
         }
         state.devices = hid.devices.map { DeviceInfo(name: $0.name, isKeyboard: $0.isKeyboard, channel: $0.currentHost.map { $0 + 1 }) }

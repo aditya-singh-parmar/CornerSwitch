@@ -42,6 +42,8 @@ final class AppState: ObservableObject {
     @Published var targetChannel: Int { didSet { d.set(targetChannel, forKey: "targetChannel") } }
     @Published var resistance: Resistance { didSet { d.set(resistance.rawValue, forKey: "resistance") } }
     @Published var autoUpdate: Bool { didSet { d.set(autoUpdate, forKey: "autoUpdate") } }
+    /// Switch only while Control is held (then instantly on contact). Off by default.
+    @Published var requireControl: Bool { didSet { d.set(requireControl, forKey: "requireControl") } }
 
     @Published var devices: [DeviceInfo] = [] {
         didSet {
@@ -70,6 +72,7 @@ final class AppState: ObservableObject {
         targetChannel = d.integer(forKey: "targetChannel")
         resistance = Resistance(rawValue: d.integer(forKey: "resistance")) ?? .medium
         autoUpdate = d.object(forKey: "autoUpdate") as? Bool ?? true
+        requireControl = d.bool(forKey: "requireControl")
         otherName = d.string(forKey: "otherName") ?? ""
         keyboardName = d.string(forKey: "keyboardName")
         mouseName = d.string(forKey: "mouseName")
