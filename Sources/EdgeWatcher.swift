@@ -90,8 +90,8 @@ final class EdgeWatcher {
 
         guard let frame = edgeScreen(p, s.side, frames) else {
             if arrivedAt != nil, !touchSwitched {
-                clog(String(format: "edge touch, no switch: push %.0f of %d, approach %.0f pt/s",
-                            touchMaxPush, s.resistance.rawValue, touchApproach))
+                clog(String(format: "edge touch, no switch: pushed %.0f pt, approach %.0f pt/s",
+                            touchMaxPush, touchApproach))
             }
             // Still approaching: track how fast the pointer is heading for the edge.
             approach = approach * 0.5 + (outward / dt) * 0.5
@@ -115,12 +115,13 @@ final class EdgeWatcher {
             return   // the event that brings the pointer to the edge never counts as a push
         }
         if touchPaused { return }
-        let quick = fastArrival || s.requireControl
-        guard time - arrivedAt! >= (quick ? 0 : settle) else { return }
+        guard s.requireControl || time - arrivedAt! >= settle else { return }
         // Judge direction over the whole push, not per event, so normal hand wobble is fine.
         // Sliding along the edge (mostly sideways) never adds up to a switch.
         guard outward > 0 else { pushAlong += abs(along); return }
-        if time - lastPush > 0.35 { push = 0; pushAlong = 0; pushStart = nil }
+        // A push is continuous movement into the edge. A pause of more than 60 ms ends it,
+        // which is what separates a deliberate push from the coasting after a fast move.
+        if time - lastPush > 0.06 { push = 0; pushAlong = 0; pushStart = nil }
         if pushStart == nil { pushStart = time }
         lastPush = time
         push += outward
@@ -128,15 +129,14 @@ final class EdgeWatcher {
         touchMaxPush = max(touchMaxPush, push)
         guard push >= pushAlong * 0.6 else { return }
 
-        var threshold = CGFloat(s.resistance.rawValue)
-        var hold: TimeInterval = 0.1
-        if s.requireControl { threshold = 1; hold = 0 } else if fastArrival { threshold *= 0.6; hold = 0.09 }
-        if push >= threshold, time - pushStart! >= hold, time >= cooldownUntil {
+        // Hold time from Push strength; Control mode switches on contact.
+        let hold: TimeInterval = s.requireControl ? 0 : Double(s.resistance.rawValue) / 1000
+        if time - pushStart! >= hold, time >= cooldownUntil {
             push = 0
             cooldownUntil = time + 2
             touchSwitched = true
-            clog(String(format: "edge switch: approach %.0f pt/s, %@, %.0f ms after touch",
-                        touchApproach, fastArrival ? "quick" : "slow", (time - arrivedAt!) * 1000))
+            clog(String(format: "edge switch: approach %.0f pt/s, held %.0f ms, %.0f ms after touch",
+                        touchApproach, (time - pushStart!) * 1000, (time - arrivedAt!) * 1000))
             onTrigger?(p, frame)
         }
     }
