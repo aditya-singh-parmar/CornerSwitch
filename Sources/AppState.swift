@@ -21,6 +21,8 @@ struct DeviceInfo: Identifiable, Equatable {
     let name: String
     let isKeyboard: Bool
     let channel: Int?   // 1-based
+    var battery: Int? = nil
+    var charging = false
 }
 
 enum UpdateStatus: Equatable {
@@ -44,6 +46,14 @@ final class AppState: ObservableObject {
     @Published var autoUpdate: Bool { didSet { d.set(autoUpdate, forKey: "autoUpdate") } }
     /// Switch only while Control is held (then instantly on contact). Off by default.
     @Published var requireControl: Bool { didSet { d.set(requireControl, forKey: "requireControl") } }
+    /// Switching one device by hand (its Easy-Switch button) sends the other along.
+    @Published var followAlong: Bool { didSet { d.set(followAlong, forKey: "followAlong") } }
+    /// No switching while the screen is locked or a presentation/call/video is full screen.
+    @Published var autoPause: Bool { didSet { d.set(autoPause, forKey: "autoPause") } }
+    @Published var batteryAlerts: Bool { didSet { d.set(batteryAlerts, forKey: "batteryAlerts") } }
+    /// Last known battery per device name, so it still shows while the device is away.
+    @Published var batteries: [String: Int] = [:] { didSet { d.set(batteries, forKey: "batteries") } }
+    @Published var pausedReason: String?
 
     @Published var devices: [DeviceInfo] = [] {
         didSet {
@@ -73,6 +83,10 @@ final class AppState: ObservableObject {
         resistance = Resistance(rawValue: d.integer(forKey: "resistance")) ?? .medium
         autoUpdate = d.object(forKey: "autoUpdate") as? Bool ?? true
         requireControl = d.bool(forKey: "requireControl")
+        followAlong = d.object(forKey: "followAlong") as? Bool ?? true
+        autoPause = d.object(forKey: "autoPause") as? Bool ?? true
+        batteryAlerts = d.object(forKey: "batteryAlerts") as? Bool ?? true
+        batteries = d.dictionary(forKey: "batteries") as? [String: Int] ?? [:]
         otherName = d.string(forKey: "otherName") ?? ""
         keyboardName = d.string(forKey: "keyboardName")
         mouseName = d.string(forKey: "mouseName")

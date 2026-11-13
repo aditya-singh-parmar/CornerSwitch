@@ -17,6 +17,12 @@ final class LogiDevice {
     var changeHostIndex: UInt8?
     var hostCount: Int?
     var currentHost: Int?   // 0-based
+    /// UNIFIED_BATTERY (0x1004) feature index and last reading.
+    var batteryIndex: UInt8?
+    var battery: Int?
+    var charging = false
+    /// Last time the device sent ordinary input (a keypress or mouse movement).
+    var lastActivity = Date.distantPast
     var pending: [Pending] = []
 
     struct Pending {
@@ -40,6 +46,8 @@ final class HIDPP {
     private(set) var devices: [LogiDevice] = []
     private(set) var openResult: IOReturn = kIOReturnSuccess
     var onChange: (() -> Void)?
+    /// A device dropped off this Mac (switched away, slept, or turned off).
+    var onRemoved: ((LogiDevice) -> Void)?
     var log: (String) -> Void = { _ in }
 
     func start() {
@@ -108,11 +116,16 @@ final class HIDPP {
         d.pending.forEach { $0.done(nil) }
         d.pending.removeAll()
         log("disconnected: \(d.name)")
+        onRemoved?(d)
         onChange?()
     }
 
     private func input(sender: UnsafeMutableRawPointer?, reportID: UInt32, report: UnsafeMutablePointer<UInt8>, len: CFIndex) {
         guard let d = devices.first(where: { $0.opaque == sender }) else { return }
+        // Ordinary input (keys, movement) uses other report IDs than HID++ (0x10/0x11).
+        let first = len > 0 ? report[0] : 0
+        let isHIDPP = reportID == 0x10 || reportID == UInt32(kReportLong) || first == 0x10 || first == kReportLong
+        if !isHIDPP { d.lastActivity = Date(); return }
         var r = Array(UnsafeBufferPointer(start: report, count: len))
         if r.first != kReportLong {
             guard reportID == UInt32(kReportLong) else { return }
@@ -169,8 +182,34 @@ final class HIDPP {
                     UserDefaults.standard.set(Int(info[1]), forKey: "host.\(d.name)")
                 }
                 self.onChange?()
+                self.findBattery(d)
                 then?()
             }
+        }
+    }
+
+    /// Looks up UNIFIED_BATTERY (0x1004) once, then reads it.
+    func findBattery(_ d: LogiDevice) {
+        if d.batteryIndex != nil { readBattery(d); return }
+        send(d, feature: 0x00, fn: 0, params: [0x10, 0x04]) { [weak self] resp in
+            guard let self, let idx = resp?.first, idx != 0 else { return }
+            d.batteryIndex = idx
+            self.readBattery(d)
+        }
+    }
+
+    /// get_status: [state of charge %, level bits, charging status, external power].
+    func readBattery(_ d: LogiDevice) {
+        guard let idx = d.batteryIndex else { return }
+        send(d, feature: idx, fn: 1) { [weak self] r in
+            guard let self, let r, r.count >= 3 else { return }
+            var pct = Int(r[0])
+            if pct == 0 {   // device reports levels only
+                pct = r[1] & 8 != 0 ? 100 : r[1] & 4 != 0 ? 60 : r[1] & 2 != 0 ? 20 : r[1] & 1 != 0 ? 5 : 0
+            }
+            d.battery = pct
+            d.charging = r[2] == 1 || r[2] == 2 || r[2] == 3
+            self.onChange?()
         }
     }
 

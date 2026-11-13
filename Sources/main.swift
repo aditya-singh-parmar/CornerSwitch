@@ -4,12 +4,15 @@
 import AppKit
 import SwiftUI
 import ServiceManagement
+import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     let hid = HIDPP()
     let hud = SwitchHUD()
     let launchedAt = Date()
     var lastArrival: Date?
+    /// When this app last sent a switch, to tell our own switches from manual ones.
+    var lastSwitchAt: Date?
     let watcher = EdgeWatcher()
     let updater = Updater()
     let state = AppState.shared
@@ -35,9 +38,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         hid.log = { clog($0) }
         clog("launch v\(state.version), input monitoring: \(hid.hasPermission)")
         hid.onChange = { [weak self] in self?.syncDevices() }
+        hid.onRemoved = { [weak self] d in self?.deviceLeft(d) }
         hid.start()
 
         watcher.onTrigger = { [weak self] p, f in self?.switchNow(from: p, screen: f) }
+        watcher.pauseReason = { [weak self] in
+            guard let self, self.state.autoPause else { return nil }
+            return Pause.reason()
+        }
+        // Battery every 10 minutes while the devices are here.
+        Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
+            self?.hid.devices.forEach { self?.hid.readBattery($0) }
+        }
         watcher.start()
         updater.start()
         syncDevices()
@@ -45,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
         let firstRun = !UserDefaults.standard.bool(forKey: "hasLaunched")
         UserDefaults.standard.set(true, forKey: "hasLaunched")
-        if firstRun || !quietLaunch || !hid.hasPermission { showWindow() }
+        if firstRun || !quietLaunch || !hid.hasPermission || UserDefaults.standard.bool(forKey: "previewWindow") { showWindow() }
         if !hid.hasPermission { watchForPermission() }
         // Hidden: `-previewHUD YES` shows the switch hint without switching (for design checks).
         if UserDefaults.standard.bool(forKey: "previewHUD"), let f = NSScreen.main?.frame {
@@ -90,11 +102,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
                 installUpdate: { [weak self] in self?.updater.install() })))
             host.sizingOptions = [.preferredContentSize]
             let w = NSWindow(contentViewController: host)
-            w.styleMask = [.titled, .closable, .miniaturizable]
+            w.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
             w.title = "CornerSwitch"
+            w.titleVisibility = .hidden
+            w.titlebarAppearsTransparent = true
+            w.isMovableByWindowBackground = true
+            w.isOpaque = false
+            w.backgroundColor = .clear
             w.isReleasedWhenClosed = false
             w.delegate = self
             window = w
+        }
+        // Hidden design-check mode: show the window without taking focus from the user.
+        if UserDefaults.standard.bool(forKey: "previewWindow"), let w = window {
+            if UserDefaults.standard.bool(forKey: "previewDark") { w.appearance = NSAppearance(named: .darkAqua) }
+            w.layoutIfNeeded()
+            placeOnScreen(w)
+            w.orderFrontRegardless()
+            return
         }
         // Show in the Dock and Cmd-Tab while the window is open, like a normal app.
         NSApp.setActivationPolicy(.regular)
@@ -138,6 +163,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let status = NSMenuItem(title: statusLine(state), action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
+        for d in hid.devices.sorted(by: { $0.isKeyboard && !$1.isKeyboard }) {
+            let b = d.battery.map { " · \($0)%\(d.charging ? " charging" : "")" } ?? ""
+            let item = NSMenuItem(title: "\(prettyName(d.name))\(b)", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
         menu.addItem(.separator())
         let on = NSMenuItem(title: "CornerSwitch On", action: #selector(toggleEnabled), keyEquivalent: "")
         on.state = state.enabled ? .on : .off
@@ -166,9 +197,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             watcher.suppress(for: 0.8)
             if Date().timeIntervalSince(launchedAt) > 5 { hud.showArrival(at: NSEvent.mouseLocation) }
         }
-        state.devices = hid.devices.map { DeviceInfo(name: $0.name, isKeyboard: $0.isKeyboard, channel: $0.currentHost.map { $0 + 1 }) }
+        state.devices = hid.devices.map {
+            DeviceInfo(name: $0.name, isKeyboard: $0.isKeyboard, channel: $0.currentHost.map { $0 + 1 },
+                       battery: $0.battery, charging: $0.charging)
+        }
+        for d in hid.devices {
+            if let b = d.battery, state.batteries[d.name] != b { state.batteries[d.name] = b }
+            checkLowBattery(d)
+        }
         state.hasPermission = hid.hasPermission
         statusItem.button?.appearsDisabled = !state.enabled || hid.devices.isEmpty
+    }
+
+    /// One notification per discharge: at 15% or below, re-armed once it's back above 30%.
+    private func checkLowBattery(_ d: LogiDevice) {
+        guard let b = d.battery else { return }
+        let key = "lowBatteryNotified.\(d.name)"
+        let ud = UserDefaults.standard
+        if b >= 30 || d.charging { ud.removeObject(forKey: key); return }
+        guard state.batteryAlerts, b <= 15, !ud.bool(forKey: key) else { return }
+        ud.set(true, forKey: key)
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { ok, _ in
+            guard ok else { return }
+            let c = UNMutableNotificationContent()
+            c.title = "\(prettyName(d.name)) battery is low"
+            c.body = "\(b)% left. Charge it soon."
+            c.sound = .default
+            center.add(UNNotificationRequest(identifier: key, content: c, trigger: nil))
+        }
+        clog("low battery alert: \(d.name) \(b)%")
+    }
+
+    /// A device left this Mac without CornerSwitch sending it: someone pressed its
+    /// Easy-Switch button. If it was in use just before, send the other device along too.
+    /// (A device that drops off after sitting idle has gone to sleep, so nothing follows.)
+    private func deviceLeft(_ d: LogiDevice) {
+        guard state.enabled, state.followAlong else { return }
+        if let s = lastSwitchAt, Date().timeIntervalSince(s) < 5 { return }
+        let idle = Date().timeIntervalSince(d.lastActivity)
+        guard idle < 4 else { clog("\(d.name) left after \(Int(idle))s idle (sleep?), not following"); return }
+        let rest = hid.devices.filter { $0 !== d }
+        guard !rest.isEmpty else { return }
+        clog("\(d.name) was switched by hand, sending the rest along")
+        lastSwitchAt = Date()
+        let fixed = state.targetChannel
+        let fallback = state.target - 1
+        hid.switchAll { dev in
+            guard rest.contains(where: { $0 === dev }) else { return dev.currentHost ?? fallback }
+            if fixed > 0 { return fixed - 1 }
+            guard let cur = dev.currentHost else { return fallback }
+            return cur == 1 ? 0 : 1
+        }
     }
 
     /// Parks the cursor just inside the edge it left from (so coming back feels natural
@@ -185,6 +265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             clog("switch via \(via) ignored: no devices ready here"); return
         }
         clog("switch to channel \(state.target) via \(via)")
+        lastSwitchAt = Date()
         // The pointer stays where it is: no jump back from the edge.
         if let p, let f { hud.showDeparture(to: state.otherDisplayName, side: state.side, at: p, screen: f) }
         sendWhenReady(deadline: Date().addingTimeInterval(2.5))

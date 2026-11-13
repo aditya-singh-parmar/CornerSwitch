@@ -15,6 +15,12 @@ final class EdgeWatcher {
     private var push: CGFloat = 0
     /// Sideways movement during the current push; only a push that is mostly straight counts.
     private var pushAlong: CGFloat = 0
+    /// When the current push began. A switch needs the push to last a moment, so the
+    /// momentum of simply arriving at the edge never switches on its own.
+    private var pushStart: TimeInterval?
+    /// Skips switching for this touch (screen locked, presentation full screen…).
+    var pauseReason: () -> String? = { nil }
+    private var touchPaused = false
     private var lastPush: TimeInterval = 0
     private var cooldownUntil: TimeInterval = 0
     private var suppressedUntil: TimeInterval = 0
@@ -59,6 +65,7 @@ final class EdgeWatcher {
     private func reset() {
         push = 0
         pushAlong = 0
+        pushStart = nil
         arrivedAt = nil
         approach = 0
     }
@@ -90,6 +97,7 @@ final class EdgeWatcher {
             approach = approach * 0.5 + (outward / dt) * 0.5
             push = 0
             pushAlong = 0
+            pushStart = nil
             arrivedAt = nil
             return
         }
@@ -99,13 +107,21 @@ final class EdgeWatcher {
             touchMaxPush = 0
             touchApproach = approach
             touchSwitched = false
+            touchPaused = false
+            if let why = pauseReason() {
+                touchPaused = true
+                clog("edge ignored: \(why)")
+            }
+            return   // the event that brings the pointer to the edge never counts as a push
         }
+        if touchPaused { return }
         let quick = fastArrival || s.requireControl
         guard time - arrivedAt! >= (quick ? 0 : settle) else { return }
         // Judge direction over the whole push, not per event, so normal hand wobble is fine.
         // Sliding along the edge (mostly sideways) never adds up to a switch.
         guard outward > 0 else { pushAlong += abs(along); return }
-        if time - lastPush > 0.35 { push = 0; pushAlong = 0 }
+        if time - lastPush > 0.35 { push = 0; pushAlong = 0; pushStart = nil }
+        if pushStart == nil { pushStart = time }
         lastPush = time
         push += outward
         pushAlong += abs(along)
@@ -113,8 +129,9 @@ final class EdgeWatcher {
         guard push >= pushAlong * 0.6 else { return }
 
         var threshold = CGFloat(s.resistance.rawValue)
-        if s.requireControl { threshold = 1 } else if fastArrival { threshold *= 0.35 }
-        if push >= threshold, time >= cooldownUntil {
+        var hold: TimeInterval = 0.1
+        if s.requireControl { threshold = 1; hold = 0 } else if fastArrival { threshold *= 0.6; hold = 0.09 }
+        if push >= threshold, time - pushStart! >= hold, time >= cooldownUntil {
             push = 0
             cooldownUntil = time + 2
             touchSwitched = true
