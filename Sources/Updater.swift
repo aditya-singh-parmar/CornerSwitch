@@ -7,6 +7,13 @@ import Security
 final class Updater {
     static let repo = "aditya-singh-parmar/CornerSwitch"
     private var timer: Timer?
+    /// Bounded timeouts so a proxy that stalls the download fails cleanly instead of spinning forever.
+    static let session: URLSession = {
+        let c = URLSessionConfiguration.default
+        c.timeoutIntervalForRequest = 20
+        c.timeoutIntervalForResource = 120
+        return URLSession(configuration: c)
+    }()
     private var latestAsset: URL?
 
     func start() {
@@ -21,8 +28,9 @@ final class Updater {
         var req = URLRequest(url: URL(string: "https://api.github.com/repos/\(Self.repo)/releases/latest")!)
         req.setValue("CornerSwitch-Updater", forHTTPHeaderField: "User-Agent")
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        URLSession.shared.dataTask(with: req) { data, _, error in
+        Self.session.dataTask(with: req) { data, _, error in
             DispatchQueue.main.async {
+                if let error { clog("update check failed: \(error.localizedDescription)") }
                 guard let data, error == nil,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let tag = json["tag_name"] as? String else {
@@ -39,6 +47,7 @@ final class Updater {
                     return
                 }
                 self.latestAsset = url
+                clog("update available: \(version)")
                 state.update = .available(version)
                 if state.autoUpdate && !userInitiated { self.install(silent: true) }
             }
@@ -54,7 +63,8 @@ final class Updater {
             do {
                 try await Self.download(url, silent: silent)
             } catch {
-                await MainActor.run { state.update = .failed(error.localizedDescription) }
+                clog("update failed: \(error.localizedDescription)")
+                await MainActor.run { state.update = .failed("Update failed. Try again later.") }
             }
         }
     }
@@ -63,7 +73,9 @@ final class Updater {
         let fm = FileManager.default
         let tmp = fm.temporaryDirectory.appendingPathComponent("CornerSwitchUpdate-\(UUID().uuidString)")
         try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
-        let (file, _) = try await URLSession.shared.download(from: url)
+        clog("downloading \(url.absoluteString)")
+        let (file, _) = try await session.download(from: url)
+        clog("downloaded, verifying")
         let zip = tmp.appendingPathComponent("CornerSwitch.zip")
         try fm.moveItem(at: file, to: zip)
         try run("/usr/bin/ditto", ["-x", "-k", zip.path, tmp.path])
@@ -91,6 +103,7 @@ final class Updater {
             "DEST": dest.path, "NEW": newApp.path, "TMP": tmp.path, "SILENT": silent ? "1" : "0",
         ]
         try p.run()
+        clog("installing and relaunching")
         await MainActor.run { NSApp.terminate(nil) }
     }
 

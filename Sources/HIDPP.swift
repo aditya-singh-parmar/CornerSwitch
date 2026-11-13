@@ -176,8 +176,22 @@ final class HIDPP {
             let target = host(d)
             let go = { [weak self] (idx: UInt8) in
                 guard let self else { return }
+                // A device that accepted the command drops off this Mac within a moment. One that
+                // just reconnected can silently ignore it, so resend until it leaves (max 3 tries).
+                func confirm(_ attempt: Int) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(900)) {
+                        guard self.devices.contains(where: { $0 === d }) else {
+                            self.log("\(d.name): left this Mac"); return
+                        }
+                        guard attempt < 3 else { self.log("\(d.name): still here after 3 tries"); return }
+                        self.log("\(d.name): still here, resending (try \(attempt + 1))")
+                        self.send(d, feature: idx, fn: 1, params: [UInt8(target)], expectReply: false) { _ in
+                            confirm(attempt + 1)
+                        }
+                    }
+                }
                 self.send(d, feature: idx, fn: 1, params: [UInt8(target)], expectReply: false) { ok in
-                    if ok != nil { self.log("\(d.name): sent to channel \(target + 1)"); return }
+                    if ok != nil { self.log("\(d.name): sent to channel \(target + 1)"); confirm(1); return }
                     self.log("\(d.name): send failed, retrying")
                     _ = IOHIDDeviceOpen(d.ref, IOOptionBits(kIOHIDOptionsTypeNone))
                     DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80)) {
