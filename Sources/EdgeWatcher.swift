@@ -13,6 +13,8 @@ final class EdgeWatcher {
     private var monitors: [Any] = []
 
     private var push: CGFloat = 0
+    /// Sideways movement during the current push; only a push that is mostly straight counts.
+    private var pushAlong: CGFloat = 0
     private var lastPush: TimeInterval = 0
     private var cooldownUntil: TimeInterval = 0
     private var suppressedUntil: TimeInterval = 0
@@ -21,11 +23,15 @@ final class EdgeWatcher {
     /// Smoothed speed toward the edge (pt/s) while approaching it.
     private var approach: CGFloat = 0
     private var lastTime: TimeInterval?
+    /// For tuning: biggest push and approach speed seen during the current edge touch.
+    private var touchMaxPush: CGFloat = 0
+    private var touchApproach: CGFloat = 0
+    private var touchSwitched = false
 
     /// Rest needed at the edge after a slow approach.
     private let settle: TimeInterval = 0.08
     /// Approach speed that counts as a deliberate move toward the other Mac.
-    private let fastSpeed: CGFloat = 1200
+    private let fastSpeed: CGFloat = 400
 
     /// Ignore the edge for a moment (used right after the devices arrive).
     func suppress(for seconds: TimeInterval) {
@@ -52,6 +58,7 @@ final class EdgeWatcher {
 
     private func reset() {
         push = 0
+        pushAlong = 0
         arrivedAt = nil
         approach = 0
     }
@@ -75,29 +82,44 @@ final class EdgeWatcher {
         }
 
         guard let frame = edgeScreen(p, s.side, frames) else {
+            if arrivedAt != nil, !touchSwitched {
+                clog(String(format: "edge touch, no switch: push %.0f of %d, approach %.0f pt/s",
+                            touchMaxPush, s.resistance.rawValue, touchApproach))
+            }
             // Still approaching: track how fast the pointer is heading for the edge.
             approach = approach * 0.5 + (outward / dt) * 0.5
             push = 0
+            pushAlong = 0
             arrivedAt = nil
             return
         }
         if arrivedAt == nil {
             arrivedAt = time
             fastArrival = approach >= fastSpeed
+            touchMaxPush = 0
+            touchApproach = approach
+            touchSwitched = false
         }
         let quick = fastArrival || s.requireControl
         guard time - arrivedAt! >= (quick ? 0 : settle) else { return }
-        // Only movement straight into the edge counts; sliding along it never builds a push.
-        guard outward > 0, outward >= abs(along) else { return }
-        if time - lastPush > 0.35 { push = 0 }
+        // Judge direction over the whole push, not per event, so normal hand wobble is fine.
+        // Sliding along the edge (mostly sideways) never adds up to a switch.
+        guard outward > 0 else { pushAlong += abs(along); return }
+        if time - lastPush > 0.35 { push = 0; pushAlong = 0 }
         lastPush = time
         push += outward
+        pushAlong += abs(along)
+        touchMaxPush = max(touchMaxPush, push)
+        guard push >= pushAlong * 0.6 else { return }
 
         var threshold = CGFloat(s.resistance.rawValue)
         if s.requireControl { threshold = 1 } else if fastArrival { threshold *= 0.35 }
         if push >= threshold, time >= cooldownUntil {
             push = 0
             cooldownUntil = time + 2
+            touchSwitched = true
+            clog(String(format: "edge switch: approach %.0f pt/s, %@, %.0f ms after touch",
+                        touchApproach, fastArrival ? "quick" : "slow", (time - arrivedAt!) * 1000))
             onTrigger?(p, frame)
         }
     }

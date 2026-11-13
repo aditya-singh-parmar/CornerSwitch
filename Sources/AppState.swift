@@ -6,7 +6,7 @@ enum Side: String, CaseIterable {
 }
 
 enum Resistance: Int, CaseIterable {
-    case light = 30, medium = 100, firm = 220
+    case light = 15, medium = 40, firm = 100
     var title: String {
         switch self {
         case .light: "Light"
