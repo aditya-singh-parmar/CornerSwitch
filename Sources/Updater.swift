@@ -19,6 +19,7 @@ final class Updater {
     func start() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self.check() }
         timer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in self?.check() }
+        timer?.tolerance = 600
     }
 
     func check(userInitiated: Bool = false) {

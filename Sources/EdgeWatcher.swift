@@ -45,7 +45,27 @@ final class EdgeWatcher {
         reset()
     }
 
+    /// Screen frames, cached so a mouse move costs no window-server round trip.
+    private var frames: [NSRect] = []
+    private var screenObserver: Any?
+
+    /// Watches the pointer only while it can matter (switching on, devices on this Mac).
+    /// With the monitors removed the app gets no mouse events at all, so it sits at 0% CPU.
+    var active = false {
+        didSet {
+            guard active != oldValue else { return }
+            if active { install() } else { uninstall() }
+        }
+    }
+
     func start() {
+        frames = NSScreen.screens.map(\.frame)
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.frames = NSScreen.screens.map(\.frame) }
+    }
+
+    private func install() {
         let mask: NSEvent.EventTypeMask = [.mouseMoved]
         if let m = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] in self?.handle($0) }) {
             monitors.append(m)
@@ -53,13 +73,21 @@ final class EdgeWatcher {
         if let m = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] in self?.handle($0); return $0 }) {
             monitors.append(m)
         }
+        clog("edge watching on")
+    }
+
+    private func uninstall() {
+        monitors.forEach(NSEvent.removeMonitor)
+        monitors.removeAll()
+        reset()
+        clog("edge watching off")
     }
 
     private func handle(_ e: NSEvent) {
         process(location: NSEvent.mouseLocation, dx: e.deltaX, dy: e.deltaY, time: e.timestamp,
                 buttonsDown: NSEvent.pressedMouseButtons != 0,
                 controlDown: e.modifierFlags.contains(.control),
-                frames: NSScreen.screens.map(\.frame))
+                frames: frames)
     }
 
     private func reset() {

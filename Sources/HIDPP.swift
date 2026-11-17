@@ -21,8 +21,8 @@ final class LogiDevice {
     var batteryIndex: UInt8?
     var battery: Int?
     var charging = false
-    /// Last time the device sent ordinary input (a keypress or mouse movement).
-    var lastActivity = Date.distantPast
+    /// Uptime when the device last sent ordinary input (mouse movement; keyboards' keys don't arrive here).
+    var lastActivity: TimeInterval = -.infinity
     var pending: [Pending] = []
 
     struct Pending {
@@ -125,7 +125,7 @@ final class HIDPP {
         // Ordinary input (keys, movement) uses other report IDs than HID++ (0x10/0x11).
         let first = len > 0 ? report[0] : 0
         let isHIDPP = reportID == 0x10 || reportID == UInt32(kReportLong) || first == 0x10 || first == kReportLong
-        if !isHIDPP { d.lastActivity = Date(); return }
+        if !isHIDPP { d.lastActivity = ProcessInfo.processInfo.systemUptime; return }
         var r = Array(UnsafeBufferPointer(start: report, count: len))
         if r.first != kReportLong {
             guard reportID == UInt32(kReportLong) else { return }

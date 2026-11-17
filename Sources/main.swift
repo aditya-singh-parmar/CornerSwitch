@@ -5,6 +5,7 @@ import AppKit
 import SwiftUI
 import ServiceManagement
 import UserNotifications
+import Combine
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     let hid = HIDPP()
@@ -19,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     var statusItem: NSStatusItem!
     var window: NSWindow?
     var quietLaunch = false
+    private var enabledSub: AnyCancellable?
 
     func applicationWillFinishLaunching(_ note: Notification) {
         quietLaunch = launchedQuietly()
@@ -46,11 +48,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             guard let self, self.state.autoPause else { return nil }
             return Pause.reason()
         }
-        // Battery every 10 minutes while the devices are here.
-        Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
+        // Battery every 10 minutes while the devices are here. The wide tolerance lets macOS
+        // batch the wake-up with others instead of waking the CPU just for this.
+        let battery = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
             self?.hid.devices.forEach { self?.hid.readBattery($0) }
         }
+        battery.tolerance = 120
         watcher.start()
+        enabledSub = state.$enabled.dropFirst().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.updateWatcher() }
+        }
         updater.start()
         syncDevices()
         state.launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -207,6 +214,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         state.hasPermission = hid.hasPermission
         statusItem.button?.appearsDisabled = !state.enabled || hid.devices.isEmpty
+        updateWatcher()
+    }
+
+    /// The pointer is only watched while a switch could go out from this Mac.
+    private func updateWatcher() {
+        watcher.active = state.enabled && (!hid.devices.isEmpty || UserDefaults.standard.bool(forKey: "dryRun"))
     }
 
     /// One notification per discharge: at 15% or below, re-armed once it's back above 30%.
@@ -235,8 +248,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     private func deviceLeft(_ d: LogiDevice) {
         guard state.enabled, state.followAlong else { return }
         if let s = lastSwitchAt, Date().timeIntervalSince(s) < 5 { return }
-        let idle = Date().timeIntervalSince(d.lastActivity)
-        guard idle < 4 else { clog("\(d.name) left after \(Int(idle))s idle (sleep?), not following"); return }
+        // The keyboard's own keys never reach this app (macOS keeps them), and the Easy-Switch
+        // key is handled in the keyboard itself, so for the keyboard "in use" means the user
+        // touched any input on this Mac a moment ago (usually the mouse, just before reaching
+        // over to the key). Asked once here, so nothing is watched in between.
+        let own = ProcessInfo.processInfo.systemUptime - d.lastActivity
+        let anyInput = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+        let idle = d.isKeyboard ? min(own, anyInput) : own
+        guard idle < 4 else { clog(String(format: "%@ left after %.0fs idle (sleep?), not following", d.name, min(idle, 99999))); return }
         let rest = hid.devices.filter { $0 !== d }
         guard !rest.isEmpty else { return }
         clog("\(d.name) was switched by hand, sending the rest along")
