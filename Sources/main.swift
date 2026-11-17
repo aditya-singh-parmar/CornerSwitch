@@ -14,6 +14,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     var lastArrival: Date?
     /// When this app last sent a switch, to tell our own switches from manual ones.
     var lastSwitchAt: Date?
+    /// Between willSleep and didWake: devices drop because the Mac is going to sleep.
+    var systemSleeping = false
+    private var lastEdgeWake: TimeInterval = 0
     let watcher = EdgeWatcher()
     let updater = Updater()
     let state = AppState.shared
@@ -44,6 +47,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         hid.start()
 
         watcher.onTrigger = { [weak self] p, f in self?.switchNow(from: p, screen: f) }
+        // Wake both devices the moment the pointer touches the edge; the push that confirms
+        // the switch takes ~280 ms, so by then both are listening and leave together.
+        watcher.onEdgeTouch = { [weak self] in
+            guard let self else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now - self.lastEdgeWake > 1 else { return }
+            self.lastEdgeWake = now
+            self.hid.devices.forEach { self.hid.wake($0) }
+        }
         watcher.pauseReason = { [weak self] in
             guard let self, self.state.autoPause else { return nil }
             return Pause.reason()
@@ -55,6 +67,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         battery.tolerance = 120
         watcher.start()
+        let ws = NSWorkspace.shared.notificationCenter
+        ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in self?.systemSleeping = true }
+        ws.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in self?.systemSleeping = false }
         enabledSub = state.$enabled.dropFirst().sink { [weak self] _ in
             DispatchQueue.main.async { self?.updateWatcher() }
         }
@@ -243,31 +258,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     /// A device left this Mac without CornerSwitch sending it: someone pressed its
-    /// Easy-Switch button. If it was in use just before, send the other device along too.
-    /// (A device that drops off after sitting idle has gone to sleep, so nothing follows.)
+    /// Easy-Switch button, so send the other device along. This is the hot path: the
+    /// command goes out first and everything else (logging, UI) happens after.
     private func deviceLeft(_ d: LogiDevice) {
-        guard state.enabled, state.followAlong else { return }
+        guard state.enabled, state.followAlong, !systemSleeping else { return }
+        let now = ProcessInfo.processInfo.systemUptime
         if let s = lastSwitchAt, Date().timeIntervalSince(s) < 5 { return }
-        // The keyboard's own keys never reach this app (macOS keeps them), and the Easy-Switch
-        // key is handled in the keyboard itself, so for the keyboard "in use" means the user
-        // touched any input on this Mac a moment ago (usually the mouse, just before reaching
-        // over to the key). Asked once here, so nothing is watched in between.
-        let own = ProcessInfo.processInfo.systemUptime - d.lastActivity
-        let anyInput = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
-        let idle = d.isKeyboard ? min(own, anyInput) : own
-        guard idle < 4 else { clog(String(format: "%@ left after %.0fs idle (sleep?), not following", d.name, min(idle, 99999))); return }
+        // A link that drops right after connecting is Bluetooth settling, not a key press.
+        guard now - d.connectedAt > 2 else { clog("\(d.name) dropped right after connecting, not following"); return }
+        // The keyboard doesn't disconnect when it dozes off (80 of 80 logged drops were
+        // switches), so it always counts. The mouse does sleep, so it must have just been used.
+        if !d.isKeyboard {
+            let idle = now - d.lastActivity
+            guard idle < 4 else { clog(String(format: "%@ left after %.0fs idle (sleep?), not following", d.name, min(idle, 99999))); return }
+        }
         let rest = hid.devices.filter { $0 !== d }
         guard !rest.isEmpty else { return }
-        clog("\(d.name) was switched by hand, sending the rest along")
         lastSwitchAt = Date()
         let fixed = state.targetChannel
         let fallback = state.target - 1
         hid.switchAll { dev in
-            guard rest.contains(where: { $0 === dev }) else { return dev.currentHost ?? fallback }
+            guard rest.contains(where: { $0 === dev }) else { return nil }
             if fixed > 0 { return fixed - 1 }
             guard let cur = dev.currentHost else { return fallback }
             return cur == 1 ? 0 : 1
         }
+        clog("\(d.name) was switched by hand, sent the rest along")
     }
 
     /// Parks the cursor just inside the edge it left from (so coming back feels natural
@@ -286,8 +302,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         clog("switch to channel \(state.target) via \(via)")
         lastSwitchAt = Date()
         // The pointer stays where it is: no jump back from the edge.
-        if let p, let f { hud.showDeparture(to: state.otherDisplayName, side: state.side, at: p, screen: f) }
+        // Command first, hint second: drawing the hint must never delay the switch.
         sendWhenReady(deadline: Date().addingTimeInterval(2.5))
+        if let p, let f { hud.showDeparture(to: state.otherDisplayName, side: state.side, at: p, screen: f) }
     }
 
     /// If the keyboard or mouse is still reconnecting to this Mac (it arrived moments ago),

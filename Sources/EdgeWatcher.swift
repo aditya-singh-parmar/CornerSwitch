@@ -10,6 +10,8 @@ import AppKit
 final class EdgeWatcher {
     /// Called with the cursor position and the screen frame it pushed out of (Cocoa coordinates).
     var onTrigger: ((NSPoint, NSRect) -> Void)?
+    /// The pointer just reached the switching edge: a switch may follow in a few hundred ms.
+    var onEdgeTouch: (() -> Void)?
     private var monitors: [Any] = []
 
     private var push: CGFloat = 0
@@ -140,6 +142,7 @@ final class EdgeWatcher {
                 touchPaused = true
                 clog("edge ignored: \(why)")
             }
+            if !touchPaused { onEdgeTouch?() }
             return   // the event that brings the pointer to the edge never counts as a push
         }
         if touchPaused { return }

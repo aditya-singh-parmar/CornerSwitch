@@ -24,6 +24,9 @@ final class LogiDevice {
     /// Uptime when the device last sent ordinary input (mouse movement; keyboards' keys don't arrive here).
     var lastActivity: TimeInterval = -.infinity
     var pending: [Pending] = []
+    let connectedAt = ProcessInfo.processInfo.systemUptime
+    /// Uptime of the first CHANGE_HOST in the current switch, to time how fast it left.
+    var sentAt: TimeInterval?
 
     struct Pending {
         let id: UUID
@@ -113,10 +116,15 @@ final class HIDPP {
     private func removed(_ dev: IOHIDDevice) {
         guard let i = devices.firstIndex(where: { $0.ref == dev }) else { return }
         let d = devices.remove(at: i)
+        // Follow-along reacts here, so it runs before anything else.
+        onRemoved?(d)
         d.pending.forEach { $0.done(nil) }
         d.pending.removeAll()
-        log("disconnected: \(d.name)")
-        onRemoved?(d)
+        if let t = d.sentAt {
+            log(String(format: "disconnected: %@, %.0f ms after the command", d.name, (ProcessInfo.processInfo.systemUptime - t) * 1000))
+        } else {
+            log("disconnected: \(d.name)")
+        }
         onChange?()
     }
 
@@ -125,7 +133,10 @@ final class HIDPP {
         // Ordinary input (keys, movement) uses other report IDs than HID++ (0x10/0x11).
         let first = len > 0 ? report[0] : 0
         let isHIDPP = reportID == 0x10 || reportID == UInt32(kReportLong) || first == 0x10 || first == kReportLong
-        if !isHIDPP { d.lastActivity = ProcessInfo.processInfo.systemUptime; return }
+        if !isHIDPP {
+            d.lastActivity = ProcessInfo.processInfo.systemUptime
+            return
+        }
         var r = Array(UnsafeBufferPointer(start: report, count: len))
         if r.first != kReportLong {
             guard reportID == UInt32(kReportLong) else { return }
@@ -213,38 +224,64 @@ final class HIDPP {
         }
     }
 
-    /// Moves every connected device at once. `host(d)` gives each device's target channel
-    /// (0-based), since a keyboard and a mouse can be paired to the Macs on different keys.
-    /// A failed write is retried once after reopening the device.
-    func switchAll(_ host: @escaping (LogiDevice) -> Int) {
+    /// Writes run off the main thread and in parallel, so one device's Bluetooth round trip
+    /// never holds up the other's.
+    private let writeQueue = DispatchQueue(label: "cornerswitch.hidpp.write", qos: .userInteractive, attributes: .concurrent)
+
+    /// A one-packet HID++ ping (root getProtocolVersion), no reply awaited. An idle Bluetooth
+    /// device only listens every few hundred ms; for ~4 s after any traffic it listens on every
+    /// connection event, so a CHANGE_HOST that follows lands in ~15 ms instead of up to ~1 s.
+    func wake(_ d: LogiDevice) {
+        var buf = [UInt8](repeating: 0, count: 20)
+        buf[0] = kReportLong
+        buf[1] = kDeviceIndexBT
+        buf[3] = (1 << 4) | kSoftwareID
+        buf[6] = 0x5A
+        let ref = d.ref
+        writeQueue.async { _ = IOHIDDeviceSetReport(ref, kIOHIDReportTypeOutput, CFIndex(kReportLong), buf, buf.count) }
+    }
+
+    /// Fire-and-forget CHANGE_HOST. `done` runs on main with success and the write's duration in ms.
+    private func writeHost(_ d: LogiDevice, idx: UInt8, target: Int, done: @escaping (Bool, Double) -> Void) {
+        var buf = [UInt8](repeating: 0, count: 20)
+        buf[0] = kReportLong
+        buf[1] = kDeviceIndexBT
+        buf[2] = idx
+        buf[3] = (1 << 4) | kSoftwareID
+        buf[4] = UInt8(target)
+        let ref = d.ref
+        writeQueue.async {
+            let t = ProcessInfo.processInfo.systemUptime
+            let r = IOHIDDeviceSetReport(ref, kIOHIDReportTypeOutput, CFIndex(kReportLong), buf, buf.count)
+            let ms = (ProcessInfo.processInfo.systemUptime - t) * 1000
+            DispatchQueue.main.async { done(r == kIOReturnSuccess, ms) }
+        }
+    }
+
+    /// Moves connected devices at once. `host(d)` gives each device's target channel
+    /// (0-based), or nil to leave it, since a keyboard and a mouse can be paired to the Macs
+    /// on different keys. A device that's still here shortly after is sent again.
+    func switchAll(_ host: @escaping (LogiDevice) -> Int?) {
         for d in devices {
-            let target = host(d)
+            guard let target = host(d) else { continue }
             let go = { [weak self] (idx: UInt8) in
                 guard let self else { return }
-                // A device that accepted the command drops off this Mac within a moment. One that
-                // just reconnected can silently ignore it, so resend until it leaves (max 3 tries).
-                func confirm(_ attempt: Int) {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(900)) {
-                        guard self.devices.contains(where: { $0 === d }) else {
-                            self.log("\(d.name): left this Mac"); return
-                        }
-                        guard attempt < 3 else { self.log("\(d.name): still here after 3 tries"); return }
-                        self.log("\(d.name): still here, resending (try \(attempt + 1))")
-                        self.send(d, feature: idx, fn: 1, params: [UInt8(target)], expectReply: false) { _ in
-                            confirm(attempt + 1)
-                        }
-                    }
-                }
-                self.send(d, feature: idx, fn: 1, params: [UInt8(target)], expectReply: false) { ok in
-                    if ok != nil { self.log("\(d.name): sent to channel \(target + 1)"); confirm(1); return }
-                    self.log("\(d.name): send failed, retrying")
-                    _ = IOHIDDeviceOpen(d.ref, IOOptionBits(kIOHIDOptionsTypeNone))
-                    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(80)) {
-                        self.send(d, feature: idx, fn: 1, params: [UInt8(target)], expectReply: false) { ok2 in
-                            self.log("\(d.name): retry \(ok2 != nil ? "sent" : "failed")")
+                d.sentAt = ProcessInfo.processInfo.systemUptime
+                // A device that accepted the command drops off this Mac within ~100 ms. One that
+                // just reconnected can silently ignore it, so resend quickly until it leaves.
+                func attempt(_ n: Int) {
+                    self.writeHost(d, idx: idx, target: target) { ok, ms in
+                        if !ok { _ = IOHIDDeviceOpen(d.ref, IOOptionBits(kIOHIDOptionsTypeNone)) }
+                        self.log(String(format: "%@: %@ channel %d (try %d, write %.0f ms)",
+                                        d.name, ok ? "sent to" : "FAILED sending to", target + 1, n, ms))
+                        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(ok ? 250 : 40)) {
+                            guard self.devices.contains(where: { $0 === d }) else { return }
+                            guard n < 5 else { self.log("\(d.name): still here after \(n) tries"); return }
+                            attempt(n + 1)
                         }
                     }
                 }
+                attempt(1)
             }
             if let idx = d.changeHostIndex { go(idx) } else {
                 log("\(d.name): not probed yet, probing before switch")
