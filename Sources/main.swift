@@ -9,8 +9,6 @@ import Combine
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     let hid = HIDPP()
-    let hud = SwitchHUD()
-    let launchedAt = Date()
     var lastArrival: Date?
     /// When this app last sent a switch, to tell our own switches from manual ones.
     var lastSwitchAt: Date?
@@ -81,13 +79,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         UserDefaults.standard.set(true, forKey: "hasLaunched")
         if firstRun || !quietLaunch || !hid.hasPermission || UserDefaults.standard.bool(forKey: "previewWindow") { showWindow() }
         if !hid.hasPermission { watchForPermission() }
-        // Hidden: `-previewHUD YES` shows the switch hint without switching (for design checks).
-        if UserDefaults.standard.bool(forKey: "previewHUD"), let f = NSScreen.main?.frame {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                self.hud.showDeparture(to: self.state.otherDisplayName, side: self.state.side,
-                                       at: NSPoint(x: f.minX, y: f.midY), screen: f, hold: 8)
-            }
-        }
     }
 
     /// Polls until Input Monitoring is granted, then connects to the devices without a restart.
@@ -212,12 +203,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     // MARK: Behaviour
 
     func syncDevices() {
-        // Keyboard and mouse just arrived from the other Mac: ring the pointer so it's easy to find.
+        // Keyboard and mouse just arrived from the other Mac. No animation: anything drawn
+        // here only makes the hand-over feel slower.
         if state.devices.isEmpty, !hid.devices.isEmpty {
             lastArrival = Date()
             // Hand still moving from the other Mac: don't let that bounce the devices straight back.
             watcher.suppress(for: 0.8)
-            if Date().timeIntervalSince(launchedAt) > 5 { hud.showArrival(at: NSEvent.mouseLocation) }
         }
         state.devices = hid.devices.map {
             DeviceInfo(name: $0.name, isKeyboard: $0.isKeyboard, channel: $0.currentHost.map { $0 + 1 },
@@ -301,10 +292,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
         clog("switch to channel \(state.target) via \(via)")
         lastSwitchAt = Date()
-        // The pointer stays where it is: no jump back from the edge.
-        // Command first, hint second: drawing the hint must never delay the switch.
+        // The pointer stays where it is: no jump back from the edge, and no on-screen hint.
         sendWhenReady(deadline: Date().addingTimeInterval(2.5))
-        if let p, let f { hud.showDeparture(to: state.otherDisplayName, side: state.side, at: p, screen: f) }
     }
 
     /// If the keyboard or mouse is still reconnecting to this Mac (it arrived moments ago),
